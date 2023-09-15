@@ -1,4 +1,5 @@
 use crate::types::{TableError, TracebackFrame, Type, Value};
+use core::fmt::Debug;
 use std::{borrow::Cow, fmt::Display, sync::Arc};
 
 #[derive(Debug, thiserror::Error)]
@@ -87,6 +88,10 @@ impl Clone for ErrorKind {
 impl ErrorKind {
     pub fn other<'a, S: Into<Cow<'a, str>>>(s: S) -> Self {
         Self::Other(s.into().into_owned())
+    }
+
+    pub fn other_error<'a, S: Debug>(s: S) -> Self {
+        Self::Other(format!("{s:?}"))
     }
 
     pub fn from_error_object(error_object: Value) -> Self {

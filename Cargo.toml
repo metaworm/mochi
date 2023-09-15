@@ -22,6 +22,7 @@ rlua = { version = "0.19.4", features = ["builtin-lua54", "lua-no-oslib"], optio
 rustc-hash = "1.1.0"
 rustyline = { version = "11.0.0", default-features = false, optional = true }
 thiserror = "1.0.40"
+regex = '1.9'
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 jemallocator = { version = "0.5.0", optional = true }

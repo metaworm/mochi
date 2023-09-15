@@ -8,6 +8,7 @@ use crate::{
     types::{Integer, Table, Type, Value},
 };
 use bstr::{ByteSlice, B};
+use regex::bytes::Regex;
 use std::ops::Range;
 
 pub fn load<'gc>(gc: &'gc GcContext, vm: &mut Vm<'gc>) -> GcCell<'gc, Table<'gc>> {
@@ -20,6 +21,7 @@ pub fn load<'gc>(gc: &'gc GcContext, vm: &mut Vm<'gc>) -> GcCell<'gc, Table<'gc>
             (B("char"), string_char),
             (B("dump"), string_dump),
             (B("find"), string_find),
+            (B("match"), string_match),
             (B("format"), format::string_format),
             (B("len"), string_len),
             (B("lower"), string_lower),
@@ -102,6 +104,96 @@ fn string_dump<'gc>(
     }
 }
 
+fn to_regex(re: &[u8]) -> Result<Regex, ErrorKind> {
+    let mut i = 0;
+    let mut nre = String::with_capacity(re.len());
+
+    while i < re.len() {
+        // TODO: more translation
+        match re[i] {
+            b'%' => {
+                i += 1;
+                match re.get(i).copied() {
+                    Some(
+                        c @ (b'a' | b'c' | b'd' | b'g' | b'l' | b'p' | b's' | b'u' | b'w' | b'x'
+                        | b'+' | b'-' | b'*' | b'?' | b'.'),
+                    ) => {
+                        nre.push('\\');
+                        nre.push(c as _);
+                    }
+                    Some(b'%') => {
+                        nre.push('%');
+                    }
+                    Some(b'\\') => {
+                        nre.push_str("\\\\");
+                    }
+                    Some(c) => {
+                        nre.push('%');
+                        nre.push(c as _);
+                    }
+                    None => return Err(ErrorKind::other("invalid %")),
+                }
+            }
+
+            c => nre.push(c as _),
+        }
+        i += 1;
+    }
+    regex::bytes::Regex::new(&nre).map_err(ErrorKind::other_error)
+}
+
+fn start_pos(s: &[u8], n: i64) -> usize {
+    match n {
+        0 => 0,
+        1.. => (n - 1) as usize,
+        _ => {
+            let p = s.len() as i64 + n;
+            p.max(0) as usize
+        }
+    }
+}
+
+fn string_match<'gc>(
+    gc: &'gc GcContext,
+    _: &mut Vm<'gc>,
+    args: Vec<Value<'gc>>,
+) -> Result<Action<'gc>, ErrorKind> {
+    let s = args.nth(1);
+    let s = s.to_string()?;
+    let pattern = args.nth(2);
+    let pattern = pattern.to_string()?;
+    let init = args.nth(3).to_integer_or(1)?;
+
+    let re = to_regex(&pattern)?;
+    Ok(Action::Return(
+        match re.captures_at(&s, start_pos(&s, init)) {
+            Some(cap) => {
+                if cap.len() == 1 {
+                    vec![gc
+                        .allocate_string(
+                            cap.get(0)
+                                .as_ref()
+                                .map(|m| m.as_bytes())
+                                .unwrap_or_default(),
+                        )
+                        .into()]
+                } else {
+                    cap.iter()
+                        .skip(1)
+                        .map(|item| {
+                            gc.allocate_string(
+                                item.as_ref().map(|m| m.as_bytes()).unwrap_or_default(),
+                            )
+                            .into()
+                        })
+                        .collect()
+                }
+            }
+            None => vec![],
+        },
+    ))
+}
+
 fn string_find<'gc>(
     _: &'gc GcContext,
     _: &mut Vm<'gc>,
@@ -125,12 +217,7 @@ fn string_find<'gc>(
         return Ok(Action::Return(vec![Value::Nil]));
     }
 
-    const SPECIALS: &[u8] = b"^$*+?.([%-";
-    if !plain && pattern.find_byteset(SPECIALS).is_some() {
-        todo!("regex")
-    }
-
-    Ok(Action::Return(
+    Ok(Action::Return(if plain {
         if let Some(pos) = &s[start..].find(&pattern) {
             let i = *pos + start;
             vec![
@@ -139,8 +226,18 @@ fn string_find<'gc>(
             ]
         } else {
             vec![Value::Nil]
-        },
-    ))
+        }
+    } else {
+        let re = to_regex(&pattern)?;
+        if let Some(m) = re.find_at(&s, start_pos(&s, init)) {
+            vec![
+                ((m.start() + 1) as Integer).into(),
+                (m.end() as Integer).into(),
+            ]
+        } else {
+            vec![Value::Nil]
+        }
+    }))
 }
 
 fn string_len<'gc>(
